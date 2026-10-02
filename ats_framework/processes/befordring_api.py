@@ -12,12 +12,65 @@ safe: a submission that already produced a bevilling comes back as
 
 import logging
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 
 from ats_framework.helpers import config
 
 logger = logging.getLogger(__name__)
+
+_TIDSZONE = ZoneInfo("Europe/Copenhagen")
+
+
+def _unix_tid(vaerdi) -> str | None:
+    """Convert a stored completion time to the Unix timestamp the API expects.
+
+    Args:
+        vaerdi:
+            The value from entity.completed[0].value.
+
+    Returns:
+        The timestamp as a string of seconds, or None where it cannot be read.
+
+    Notes:
+        The API has always taken "completed" as a Unix timestamp, because
+        OS2Forms' own remote post handler sends one. [RPA].[journalizing]
+        stores an ISO 8601 string instead — "2026-10-01T14:12:28+00:00" — and
+        sending that through made the API's int() raise, which surfaced as a
+        500 and lost the whole submission over a date field.
+
+        Converted here rather than widened there, for the same reason this
+        module flattens the payload at all: the API's contract is the shape
+        OS2Forms sends, and it is this process's job to match it.
+
+        The offset is preserved through .timestamp(), so the backend converts
+        back to the correct Copenhagen date. That matters: a submission at
+        23:30 UTC is already the next day here.
+    """
+
+    if vaerdi in (None, ""):
+        return None
+
+    tekst = str(vaerdi).strip()
+
+    # Already a timestamp — tolerated so the function is safe to apply twice.
+    if tekst.isdigit():
+        return tekst
+
+    try:
+        tidspunkt = datetime.fromisoformat(tekst)
+    except ValueError:
+        logger.warning("Kunne ikke læse completed-tidsstempel: %r", vaerdi)
+        return None
+
+    # A value with no offset is local time; that is what a bare timestamp means
+    # in this data.
+    if tidspunkt.tzinfo is None:
+        tidspunkt = tidspunkt.replace(tzinfo=_TIDSZONE)
+
+    return str(int(tidspunkt.timestamp()))
 
 
 def _api() -> tuple[str, str]:
@@ -70,12 +123,19 @@ def byg_payload(form_id: str, form_type: str, form_data: dict) -> dict:
     payload["form_id"] = form_id
 
     try:
-        payload["completed"] = form_data["entity"]["completed"][0]["value"]
+        raa_completed = form_data["entity"]["completed"][0]["value"]
     except (KeyError, IndexError, TypeError):
+        raa_completed = None
+
+    completed = _unix_tid(raa_completed)
+
+    if completed is None:
         logger.warning(
-            "Formular %s har ingen completed-dato - bevillingen oprettes uden ansøgningsdato",
+            "Formular %s har ingen brugbar completed-dato - bevillingen oprettes uden ansøgningsdato",
             form_id,
         )
+    else:
+        payload["completed"] = completed
 
     return payload
 
