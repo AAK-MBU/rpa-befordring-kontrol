@@ -1,5 +1,5 @@
 [project]
-name = "process-name-here"
+name = "rpa-befordring-kontrol"
 version = "0.0.0"
 description = "description-here"
 readme = "README.md"
@@ -8,7 +8,9 @@ dependencies = [
     "automation-server-client @ git+https://github.com/odense-rpa/automation-server-client.git",
     "mbu-rpa-core @ git+https://github.com/AAK-MBU/MBU-rpa-core.git",
     "pillow",
+    "pyodbc",
     "python-dotenv",
+    "requests",
 ]
 
 [dependency-groups]

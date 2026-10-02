@@ -1,149 +1,129 @@
-# ATS Process Framework
+# rpa-befordring-kontrol
 
-Template for RPA processes running on Automation Server (ATS). It provides the
-queue population, processing loop, retry and error handling, so a new process only
-needs to implement where its items come from and what to do with each one.
+Kontrollerer at ansøgninger om skolekørsel fra OS2Forms er blevet til bevillinger
+i Befordringssystemet — og opretter dem, der mangler.
 
-## How to use this template
+## Hvorfor
 
-This repository is tagged as a template. Create a new repository from it using the
-[GitHub instructions](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template).
+En borger ansøger om befordring gennem en af tre OS2Forms-formularer. To ting
+skal derefter ske, og de er uafhængige af hinanden:
 
-### Alternative: clone and remove the git bindings
+- **Journalisering** — formularens dokumenter lægges i GetOrganized.
+  `go_journalisering` klarer det.
+- **Bevilling** — ansøgningen skal frem til en sagsbehandler i
+  Befordringssystemet. Det er denne proces.
 
-Replace `<new-folder-name>` with your desired folder name:
+Det blev tidligere gjort af en *remote post handler* på selve OS2Forms-formularen,
+som kaldte Befordringssystemet direkte. Det virker, men der er intet, der opdager
+det, hvis kaldet fejler: ansøgningen findes, dokumenterne er journaliseret, og
+ingen bevilling dukker op.
+
+Denne proces spørger i stedet den anden vej: *hvilke ansøgninger er kommet ind,
+og mangler nogen af dem en bevilling?* Den finder huller uanset årsag — et fejlet
+kald, en nedlukning midt i det hele, en fejl i feltmapningen der siden er rettet.
+
+## Hvordan
+
+To faser, som alle ATS-processer:
+
+| Fase | Hvad den gør |
+| --- | --- |
+| `--queue` | Læser `[RPA].[journalizing].[view_Journalizing]` og lægger hver indsendelse til de tre formularer i workqueuen. |
+| `--process` | Finder elevens CPR i formularen og kalder `POST /os2forms/create_bevilling/{cpr}`. |
+
+### Afhængigheden til journaliseringen
+
+Processen læser **kun** `view_Journalizing` — en publiceret view, ikke
+journaliseringens egne tabeller. Tabellerne bagved indeholder journaliseringens
+tilstandsmaskine (`status`, `attempt_count`, response-JSON), og den er deres
+interne anliggende.
+
+`status` filtreres der **bevidst ikke** på:
+
+- En bevilling afhænger ikke af, at journaliseringen lykkedes. Det er to
+  forskellige forpligtelser — bevillingen er borgerens ansøgning, journaliseringen
+  er en arkiveringspligt.
+- Et filter på `'Successful'` ville betyde, at en fejl i journaliseringen stille
+  og roligt holdt borgeres ansøgninger væk fra sagsbehandlerne — usynligt fra
+  begge sider.
+- Det ville desuden binde processen til deres statusnavne.
+
+Der filtreres til gengæld på, at status **ikke** er `Manual`. Det er en anden
+slags filter: alle indsendelser fra før denne proces fandtes har den status, så
+det er et ekstra net under `TIDLIGSTE_FORMULAR_DATO`.
+
+Retningen er det afgørende. Filteret *fravælger* en status i stedet for at
+*kræve* en — hvis journaliseringen omdøber en status eller tilføjer en ny, holder
+filteret op med at fravælge, og kørslen ser *flere* rækker, som skæringsdatoen og
+`os2forms_id`-spærringen så fanger. Et krav om `'Successful'` ville fejle den
+anden vej og tabe en borgers ansøgning, uden at nogen opdagede det.
+
+`service-tandplejen-procesoverblik` læser samme view på samme måde.
+
+## Idempotens
+
+Den samme indsendelse kan ses mange gange. Tre lag sikrer én bevilling pr.
+ansøgning:
+
+0. Formularer med status `Manual` — alt fra før processen — læses slet ikke.
+1. `populate_queue` springer referencer over, der allerede ligger i workqueuen.
+2. Befordringssystemet afviser en bevilling med et `os2forms_id`, der findes i
+   forvejen, og svarer `already_exists`.
+3. Et unikt indeks på `Bevilling.os2forms_id` håndhæver det i databasen, også
+   hvis to kørsler overlapper.
+
+## Opsætning
+
+### Miljøvariabler
+
+Se `.env.example`. Ud over ATS' egne:
+
+| Variabel | Bruges til |
+| --- | --- |
+| `DBConnectionString` | RPA-databasen, hvor `view_Journalizing` læses. |
+| `BEFORDRING_API_ENDPOINT` | Befordringssystemets API, inkl. `/api`. |
+| `BEFORDRING_API_KEY` | Sendes som `X-API-Key`. |
+
+### `TIDLIGSTE_FORMULAR_DATO`
+
+**Den vigtigste indstilling i `ats_framework/helpers/config.py`.**
+
+`view_Journalizing` indeholder hver eneste indsendelse til de tre formularer,
+også fra før denne proces fandtes. Uden en skæringsdato opretter første kørsel en
+bevilling for dem alle.
+
+Sæt den til det tidspunkt, hvor OS2Forms' remote post handler **slukkes**. Før det
+tidspunkt opretter OS2Forms selv bevillingen, og de rækker har ingen
+`os2forms_id` — handleren sender ikke noget — så dubletspærringen i
+Befordringssystemet kan ikke genkende dem, og processen ville oprette en bevilling
+nummer to for hver ansøgning, der allerede er håndteret.
+
+### Rækkefølge ved idriftsættelse
+
+1. Kør migration `028_add_bevilling_os2forms_id.sql` i Befordringssystemet.
+2. Deploy Befordringssystemets backend (dubletspærringen).
+3. Sæt `TIDLIGSTE_FORMULAR_DATO` til i dag.
+4. Sluk de tre remote post handlers i OS2Forms.
+5. Start denne proces.
+
+Punkt 3 og 4 hører sammen — mellem dem oprettes ingen bevillinger automatisk.
+
+## Udvikling
 
 ```sh
-git clone https://github.com/AAK-MBU/ATS_Process_Framework.git <new-folder-name>
-
-cd <new-folder-name>
-
-rm -rf .git
-git init
-git add .
-git commit -m "Initial commit from ATS_Process_Framework"
-
-git remote add origin <new-repo-url>
-git push -u origin main
-```
-
-## Project structure
-
-```
-main.py                     entry point — parses --queue / --process / --finalize
-ats_framework/
-  core/                     framework code, normally unchanged
-    application_handler.py  AppContext, startup / reset / close hooks
-    error_handling.py       ErrorContext, handle_error, error mail
-    finalize_process.py     post-processing hook
-    process_item.py         per-item entry point
-    queue_handler.py        queue population, concurrency, retries
-  helpers/
-    ats_functions.py        ATS API calls, item unpacking, logging
-    config.py               retry, concurrency and backoff settings
-  processes/                process-specific code — add your modules here
-```
-
-`ats_framework/core` and `ats_framework/helpers` come from the framework; keep
-changes there to a minimum so updates can be pulled in. Everything specific to your
-process goes in `ats_framework/processes`.
-
-Split `ats_framework/processes` into subfolders once it grows — for example
-`processes/sap/` or `processes/solteq/` — grouping by the system or step each module
-touches.
-
-## Setup
-
-Requires Python 3.13 and [uv](https://docs.astral.sh/uv/).
-
-```sh
+uv venv .venv
 uv sync
-cp .env.example .env
+.venv/bin/ruff check .
 ```
 
-Fill in `.env`. `ATS_URL` and `ATS_TOKEN` are required — `ATS_URL` is commented out
-in the example, and queue population raises `OSError` if it is missing.
+`pyodbc` kræver `unixodbc` og Microsofts `msodbcsql18` for at kunne importeres på
+Linux.
 
-## Running
+## Hvad processen kan udvides med
 
-The three phases are separate entry points:
+Formen — "sammenlign to billeder af verden, og ret forskellen" — passer på mere
+end bevillingsoprettelse. Oplagte næste kontroller:
 
-```sh
-uv run python main.py --queue      # populate the workqueue
-uv run python main.py --process    # process items
-uv run python main.py --finalize   # post-processing
-```
-
-## What to implement
-
-Two functions in `ats_framework/core` carry the process-specific logic. Keep them
-thin and delegate into `ats_framework/processes` rather than letting them grow:
-
-- `core/queue_handler.retrieve_items_for_queue()` — return the items to queue, each
-  as `{"reference": ..., "data": ...}`. References must be unique; items whose
-  reference is already in the queue are skipped.
-- `core/process_item.process_item(item_data, item_reference)` — do the work for one
-  item. Delete the placeholder asserts.
-
-Tuning (concurrency, retries, backoff) lives in `ats_framework/helpers/config.py`.
-
-## Application handling
-
-Processes that drive a desktop application (Solteq Tand, SAP, a browser) start it
-once in `core/application_handler.startup()` and store it on `CONTEXT`:
-
-```python
-def startup():
-    app = SolteqTandApp(...)
-    app.start_application()
-    app.login()
-    CONTEXT.app = app
-```
-
-Any module can then reach it without passing it through every call:
-
-```python
-from ats_framework.core.application_handler import get_app
-
-
-def open_patient(cpr: str):
-    app = get_app()
-    app.open_patient(cpr)
-```
-
-`get_app()` raises `ProcessError` if called before `startup()`. Because callers go
-through `CONTEXT` rather than holding the instance themselves, `reset()` can replace
-the application mid-run without leaving anyone with a dead handle.
-
-Implement teardown in `soft_close()` (ask the application to exit cleanly) and
-`hard_close()` (kill the process). `close()` tries soft first and falls back to hard,
-and `reset()` is `close()` followed by `startup()`.
-
-Note that this is shared state across the whole run. It suits one application and one
-sequential item loop — it is not safe if items are ever processed concurrently.
-
-## Work item structure
-
-Items are stored flat, and `ats_framework/helpers/ats_functions.get_item_info`
-unpacks them:
-
-```json
-{
-  "reference": "<unique reference>",
-  "data": { }
-}
-```
-
-The reference is read from the work item's own field rather than from the payload.
-
-## Error handling
-
-- `BusinessError` — expected, item-level problems. The item is set to pending user
-  action and the run continues.
-- `ProcessError` — anything unexpected. The item fails, an error mail goes out, and
-  `reset()` runs. After `MAX_RETRY` process errors the run stops.
-
-## Contributing
-
-CI runs ruff (lint and format) and requires the `version` in `pyproject.toml` to be
-bumped on every pull request to `main`.
+- Bevillinger fra OS2Forms uden `esdh_noegle`, hvis formular siden er journaliseret.
+- Bevillinger uden `matrikel_id`.
+- Elever uden beregnet `skoleafstand`.

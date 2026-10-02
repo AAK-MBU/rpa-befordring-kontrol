@@ -7,20 +7,43 @@ import logging
 from automation_server_client import Workqueue
 
 from ats_framework.helpers import config
+from ats_framework.processes import journalizing
 
 logger = logging.getLogger(__name__)
 
 
 def retrieve_items_for_queue() -> list[dict]:
-    """Function to populate queue"""
-    data = []
-    references = []
+    """Every transport-form submission since the cutoff, as queue items.
 
-    items = [
-        {"reference": ref, "data": d} for ref, d in zip(references, data, strict=True)
+    Returns:
+        A list of {"reference": form_id, "data": {...}} dictionaries.
+
+    Notes:
+        No filtering happens here beyond form type and date. Deciding whether
+        a submission still needs a bevilling is not this step's job, and there
+        are already three layers that answer it:
+
+          1. main.populate_queue skips references already in the workqueue, so
+             a submission handled on an earlier run is never re-added.
+          2. Befordringssystemet refuses a second bevilling for the same
+             os2forms_id and answers "already_exists".
+          3. A unique index enforces it in the database even if two runs
+             overlap.
+
+        The item carries the whole submission, not just an id. That is what
+        keeps this process independent: process_item talks only to
+        Befordringssystemet and never comes back here for more.
+    """
+
+    formularer = journalizing.hent_formularer()
+
+    return [
+        {
+            "reference": formular["form_id"],
+            "data": formular,
+        }
+        for formular in formularer
     ]
-
-    return items
 
 
 def create_sort_key(item: dict) -> str:
