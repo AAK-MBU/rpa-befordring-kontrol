@@ -22,14 +22,66 @@ Denne proces spørger i stedet den anden vej: *hvilke ansøgninger er kommet ind
 og mangler nogen af dem en bevilling?* Den finder huller uanset årsag — et fejlet
 kald, en nedlukning midt i det hele, en fejl i feltmapningen der siden er rettet.
 
-## Hvordan
+## Kontroller
 
-To faser, som alle ATS-processer:
+Processen kører flere kontroller på samme workqueue. Hver kontrol lægger emner
+op med sit eget præfiks i referencen, og `process_item` fordeler på typen:
 
-| Fase | Hvad den gør |
-| --- | --- |
-| `--queue` | Læser `[RPA].[journalizing].[view_Journalizing]` og lægger hver indsendelse til de tre formularer i workqueuen. |
-| `--process` | Finder elevens CPR i formularen og kalder `POST /os2forms/create_bevilling/{cpr}`. |
+| Type | Reference | Hvad den gør |
+| --- | --- | --- |
+| `opret` | `opret:<form_id>` | Indsendelser til de tre kørselsformularer, der mangler en bevilling. Kalder `POST /os2forms/create_bevilling/{cpr}`. |
+| `esdh` | `esdh:<bevilling_id>` | Bevillinger uden `esdh_noegle`. Finder barnets befordringssag i GO og skriver både sags-id og link tilbage. |
+
+To faser, som alle ATS-processer: `--queue` finder arbejdet, `--process` udfører det.
+
+### `esdh`-kontrollen
+
+Bevillinger oprettet ud fra en OS2Forms-indsendelse har ingen ESDH-nøgle —
+indsendelsen kender ikke GO-sagen — og feltet kan ikke sættes i brugerfladen.
+Nattekørslen udleder `esdh_url` *ud fra* nøglen, så uden den får bevillingen
+heller aldrig et link til sagen.
+
+Kontrollen slår op i GO: barnet findes på CPR, og derfra findes sagen med
+titlen *"Kørsel til …"*.
+
+**Opslaget er udelukkende læsende.** `go_journalisering` opretter sagerne —
+dens PPR-flow er find-eller-opret. Hvis denne proces også oprettede, ville en
+bevilling, hvis indsendelse endnu ikke er journaliseret, ende med to PPR-sager
+for samme barn. Findes der ingen sag, er svaret her "ikke endnu".
+
+Både nøglen og linket skrives, i samme kald. Linket er det, en sagsbehandler
+rent faktisk klikker på, og det kan ikke sammensættes af nøglen — GO's URL
+indeholder et sags-id (`PPR01`), som ikke findes i befordringsdatabasen. Derfor
+slås det op på GO's **API-vært** og bygges af **browser-værten**; de er ikke den
+samme, og et link bygget af API-værten peger et sted, sagsbehandleren ikke har
+adgang til.
+
+Kan linket ikke udledes, skrives nøglen alligevel. Nattekørslens trin 8 er
+stadig bagstopper og prøver linket igen — et manglende link er kosmetisk, en
+manglende nøgle betyder, at bevillingen slet ikke har en sag.
+
+### Gentagelse
+
+De to kontroller har modsatte regler:
+
+- Et `opret`-emne forsøges **én gang**. En fejl betyder, at indsendelsen kræver
+  et menneske — ingen CPR, en adresse der ikke matcher — og at lægge den i kø
+  hver halve time ville blot gentage fejlen.
+- Et `esdh`-emne forsøges **igen**. "Ikke endnu" er det normale første svar:
+  en bevilling kan findes, før dens indsendelse er journaliseret, og dermed før
+  GO-sagen findes.
+
+`queue_handler.genaktiver_ventende` sætter ventende og fejlede `esdh`-emner
+tilbage til status `new` ved starten af hver `--queue`-kørsel. Emnet
+genbruges altså — der oprettes ikke et nyt.
+
+Det er med vilje. `--process` henter arbejde gennem
+`GET /workqueues/{id}/next_item`, som kun udleverer emner, ATS stadig regner for
+udestående; et emne i `pending user action` ligger bevidst uden for den mængde.
+Alternativet — at tilføje et nyt emne med samme reference — virker også, men
+efterlader det gamle for altid: en bevilling, der først går igennem i tredje
+forsøg, ville stå med to permanente `pending user action`-rækker ved siden af
+den, der lykkedes, og kun den sidste ville være sand.
 
 ### Afhængigheden til journaliseringen
 
@@ -81,6 +133,7 @@ Se `.env.example`. Ud over ATS' egne:
 | Variabel | Bruges til |
 | --- | --- |
 | `DBConnectionString` | RPA-databasen, hvor `view_Journalizing` læses. |
+| (GO-legitimation) | Hentes via `RPAConnection` — konstanten `go_api_endpoint` og credential'et `go_api`. Ikke en miljøvariabel. |
 | `BEFORDRING_API_ENDPOINT` | Befordringssystemets API, inkl. `/api`. |
 | `BEFORDRING_API_KEY` | Sendes som `X-API-Key`. |
 
@@ -124,6 +177,6 @@ Linux.
 Formen — "sammenlign to billeder af verden, og ret forskellen" — passer på mere
 end bevillingsoprettelse. Oplagte næste kontroller:
 
-- Bevillinger fra OS2Forms uden `esdh_noegle`, hvis formular siden er journaliseret.
 - Bevillinger uden `matrikel_id`.
 - Elever uden beregnet `skoleafstand`.
+- Bevillinger hvor skolekoden ikke længere matcher elevens.

@@ -14,7 +14,11 @@ from ats_framework.core.application_handler import close, reset, startup
 from ats_framework.core.error_handling import ErrorContext, handle_error
 from ats_framework.core.finalize_process import finalize_process
 from ats_framework.core.process_item import process_item
-from ats_framework.core.queue_handler import concurrent_add, retrieve_items_for_queue
+from ats_framework.core.queue_handler import (
+    concurrent_add,
+    genaktiver_ventende,
+    retrieve_items_for_queue,
+)
 from ats_framework.helpers import ats_functions, config
 
 logger = logging.getLogger(__name__)
@@ -27,17 +31,24 @@ async def populate_queue(workqueue: Workqueue):
 
     items_to_queue = retrieve_items_for_queue()
 
-    queue_references = {str(r) for r in ats_functions.get_workqueue_items(workqueue)}
+    # return_data=True because the status is needed to decide which existing
+    # items deserve another attempt.
+    eksisterende = ats_functions.get_workqueue_items(workqueue, return_data=True)
+
+    # Retry unresolved esdh items in place, BEFORE the skip below — they are
+    # then "new" again and simply stay in the queue rather than being added a
+    # second time. See queue_handler.genaktiver_ventende.
+    genaktiver_ventende(eksisterende)
 
     new_items: list[dict] = []
     for item in items_to_queue:
         reference = str(item.get("reference") or "")
-        if reference and reference in queue_references:
-            logger.info(
-                "Reference: %s already in queue. Item: %s not added",
-                reference,
-                item,
-            )
+
+        # Presence alone is enough: anything that deserved another attempt was
+        # reactivated above, so a reference the queue already holds is never
+        # added a second time — whatever its status.
+        if reference and reference in eksisterende:
+            logger.info("Reference %s springes over (allerede i kø)", reference)
         else:
             new_items.append(item)
 

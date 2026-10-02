@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "automation-server-client @ git+https://github.com/odense-rpa/automation-server-client.git",
+    "mbu-dev-shared-components[getorganized]",
     "mbu-rpa-core @ git+https://github.com/AAK-MBU/MBU-rpa-core.git",
     "pillow",
     "pyodbc",

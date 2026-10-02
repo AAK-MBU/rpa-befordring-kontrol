@@ -63,6 +63,33 @@ EKSKLUDEREDE_STATUSSER = ("Manual",)
 
 
 # ----------------------
+# Kontroltyper
+# ----------------------
+# Each check contributes work items under its own prefix, so one workqueue
+# serves all of them and process_item can dispatch on the type rather than
+# guessing from the shape of the data. Named here because the prefix is part
+# of the item reference and therefore part of the queue's dedup.
+TYPE_OPRET_BEVILLING = "opret"
+TYPE_ESDH_NOEGLE = "esdh"
+
+
+# ----------------------
+# ESDH-nøgle-kontrollen
+# ----------------------
+# A bevilling created from an OS2Forms submission has no ESDH key — the
+# submission does not know the GO case. The nightly run derives esdh_url FROM
+# the key, so without one the bevilling never gets a link into its case
+# either, and nobody can set it by hand.
+#
+# Cheap today (a handful of rows), but it grows with every new application, so
+# the cap is here from the start: each row costs a GO lookup.
+ESDH_MAKS_PR_KOERSEL = 100
+
+# The RPA database environment the GO credentials are read from.
+RPA_DB_ENV = "PROD"
+
+
+# ----------------------
 # Timeouts
 # ----------------------
 # Generous: the create call resolves an address and a school, and a slow answer

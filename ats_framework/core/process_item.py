@@ -5,36 +5,73 @@ import logging
 import requests
 from mbu_rpa_core.exceptions import BusinessError, ProcessError
 
-from ats_framework.processes import befordring_api, cpr_udtraek
+from ats_framework.helpers import config
+from ats_framework.processes import befordring_api, cpr_udtraek, go_opslag
 
 logger = logging.getLogger(__name__)
 
-# A 4xx means the submission is the problem; a 5xx means the API is.
+# A 4xx means the item is the problem; a 5xx means the API is.
 _HTTP_CLIENT_FEJL = 400
 _HTTP_SERVER_FEJL = 500
 
 
 def process_item(item_data: dict, item_reference: str):
-    """Create the bevilling for one submission.
+    """Handle one item, whichever check produced it.
 
     Args:
         item_data:
-            The queue item's payload: form_id, form_type, form_data,
-            form_submitted_date.
+            The queue item's payload. "type" says which check it came from.
 
         item_reference:
-            The OS2Forms submission id, which is also the item's reference.
+            The typed reference, e.g. "opret:<form_id>" or "esdh:<bevilling_id>".
 
     Raises:
         BusinessError:
-            Where the submission itself is the problem and a human has to look
-            at it — no CPR to be found, or an address or school the API cannot
-            resolve. These go to pending_user rather than failing the run.
+            Where the item itself needs a human.
 
         ProcessError:
-            Where the problem is ours or the API's and a retry may help.
+            Where the problem is ours or an API's and a retry may help.
     """
 
+    type_kode = item_data.get("type", config.TYPE_OPRET_BEVILLING)
+
+    if type_kode == config.TYPE_OPRET_BEVILLING:
+        _opret_bevilling(item_data)
+        return
+
+    if type_kode == config.TYPE_ESDH_NOEGLE:
+        _saet_esdh_noegle(item_data)
+        return
+
+    raise BusinessError(f"Ukendt kontroltype '{type_kode}' på {item_reference}")
+
+
+def _kald(funktion, *args, **kwargs):
+    """Call an API function, mapping its failures onto the right exception.
+
+    4xx is the item: a submission whose address matches nothing, a bevilling
+    that no longer exists. The same request would get the same answer, so a
+    human is the only way forward. Everything else — 5xx, timeout, connection
+    refused — is worth another run.
+    """
+
+    try:
+        return funktion(*args, **kwargs)
+    except requests.HTTPError as fejl:
+        status = fejl.response.status_code if fejl.response is not None else None
+
+        if status is not None and _HTTP_CLIENT_FEJL <= status < _HTTP_SERVER_FEJL:
+            raise BusinessError(str(fejl)) from fejl
+
+        raise ProcessError(str(fejl)) from fejl
+    except requests.RequestException as fejl:
+        raise ProcessError(f"Kunne ikke nå Befordringssystemet: {fejl}") from fejl
+
+
+def _opret_bevilling(item_data: dict):
+    """Create the bevilling for one submission."""
+
+    form_id = item_data["form_id"]
     form_type = item_data["form_type"]
     form_data = item_data["form_data"]
 
@@ -45,42 +82,84 @@ def process_item(item_data: dict, item_reference: str):
         # identify is an application from a real family that will otherwise
         # never reach a caseworker, and silence is how it stays lost.
         raise BusinessError(
-            f"Ingen CPR kunne findes i formular {item_reference} ({form_type})"
+            f"Ingen CPR kunne findes i formular {form_id} ({form_type})"
         )
 
-    payload = befordring_api.byg_payload(item_reference, form_type, form_data)
+    payload = befordring_api.byg_payload(form_id, form_type, form_data)
 
-    try:
-        resultat = befordring_api.opret_bevilling(cpr, payload)
-    except requests.HTTPError as fejl:
-        status = fejl.response.status_code if fejl.response is not None else None
-
-        # 4xx is the submission: an address with no match in the register, a
-        # school that is not in Skolematrikel. Retrying sends the same payload
-        # to the same rules and gets the same answer, so a human is the only
-        # way forward.
-        if status is not None and _HTTP_CLIENT_FEJL <= status < _HTTP_SERVER_FEJL:
-            raise BusinessError(str(fejl)) from fejl
-
-        # 5xx, a timeout, a connection refused — the API's problem or the
-        # network's. Worth another run.
-        raise ProcessError(str(fejl)) from fejl
-    except requests.RequestException as fejl:
-        raise ProcessError(f"Kunne ikke nå Befordringssystemet: {fejl}") from fejl
+    resultat = _kald(befordring_api.opret_bevilling, cpr, payload)
 
     if resultat.get("status") == "already_exists":
-        # Not an error. The duplicate guard did its job — most likely the
-        # submission was handled before this item was queued.
+        # Not an error. The duplicate guard did its job.
         logger.info(
             "Formular %s havde allerede en bevilling (%s)",
-            item_reference,
+            form_id,
             resultat.get("result", {}).get("bevilling_id"),
         )
         return
 
     logger.info(
         "Oprettede bevilling for formular %s (CPR %s***): %s",
-        item_reference,
+        form_id,
         cpr[:6],
         resultat.get("result"),
     )
+
+
+def _saet_esdh_noegle(item_data: dict):
+    """Resolve a bevilling's GO case and write the key onto it.
+
+    Raises:
+        BusinessError:
+            Where GO has no befordring case for the student yet. That is the
+            expected answer for a bevilling whose submission has not been
+            journalized, so the item is offered again on later runs — see
+            queue_handler.skal_springes_over.
+
+    Notes:
+        The link is resolved in the same pass. Setting only the key would
+        leave the bevilling without a usable link until the nightly run, and
+        the link is the part a caseworker actually clicks.
+
+        A link that cannot be resolved is not an error: the key is still
+        written, and the nightly run retries the link as its backstop. A
+        missing link is a cosmetic gap; a missing key means the bevilling has
+        no case at all.
+    """
+
+    bevilling_id = item_data["bevilling_id"]
+    cpr = str(item_data["cpr_elev"]).replace("-", "")
+
+    go = go_opslag.hent_go_legitimation()
+
+    kontakt = go_opslag.find_kontakt(go, cpr)
+
+    if kontakt is None:
+        raise BusinessError(
+            f"GO kender ikke CPR {cpr[:6]}*** - kan ikke finde sag til bevilling {bevilling_id}"
+        )
+
+    navn, go_id = kontakt
+
+    sags_id = go_opslag.find_befordringssag(go, navn, go_id, cpr)
+
+    if sags_id is None:
+        raise BusinessError(
+            f"Ingen befordringssag i GO for bevilling {bevilling_id} endnu "
+            f"(CPR {cpr[:6]}***) - sagen er formentlig ikke journaliseret endnu"
+        )
+
+    sags_url = go_opslag.find_sags_url(go, sags_id)
+
+    _kald(befordring_api.saet_esdh_noegle, bevilling_id, sags_id, sags_url)
+
+    if sags_url is None:
+        logger.warning(
+            "Satte esdh_noegle %s på bevilling %s, men kunne ikke udlede link - "
+            "nattekørslen prøver igen",
+            sags_id,
+            bevilling_id,
+        )
+        return
+
+    logger.info("Satte esdh_noegle %s og link på bevilling %s", sags_id, bevilling_id)

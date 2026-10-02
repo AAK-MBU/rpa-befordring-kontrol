@@ -180,3 +180,89 @@ def opret_bevilling(cpr: str, payload: dict) -> dict:
         return response.json()
     except ValueError:
         return {"status": "ukendt", "raw": response.text}
+
+
+def hent_bevillinger_uden_esdh_noegle() -> list[dict]:
+    """Bevillinger that have no ESDH key yet, oldest first.
+
+    Returns:
+        A list of dictionaries with bevilling_id, cpr_elev and created_at.
+
+    Raises:
+        requests.HTTPError:
+            If Befordringssystemet answers with an error status.
+    """
+
+    endpoint, api_key = _api()
+
+    response = requests.get(
+        f"{endpoint}/bevilling/mangler_esdh_noegle",
+        params={"maks_antal": config.ESDH_MAKS_PR_KOERSEL},
+        headers={"X-API-Key": api_key},
+        timeout=config.API_TIMEOUT,
+    )
+
+    if not response.ok:
+        raise requests.HTTPError(
+            f"{response.status_code} fra mangler_esdh_noegle: {response.text}",
+            response=response,
+        )
+
+    return response.json()
+
+
+def saet_esdh_noegle(
+    bevilling_id: int, esdh_noegle: str, esdh_url: str | None = None
+) -> dict:
+    """Write the resolved case key, and its link, onto a bevilling.
+
+    Args:
+        bevilling_id:
+            The bevilling to update.
+
+        esdh_noegle:
+            The GO case id, e.g. "PPR-2026-123456-001".
+
+        esdh_url:
+            The resolved browser link, where GO gave one. Left out of the
+            request when None, so the nightly run's backstop still sees the
+            bevilling as unresolved and tries again.
+
+    Returns:
+        The API's JSON response.
+
+    Raises:
+        requests.HTTPError:
+            If Befordringssystemet answers with an error status.
+
+    Notes:
+        Only this one field is sent. The update endpoint applies exactly what
+        it is given (exclude_unset), so nothing else on the bevilling is
+        touched — importantly not `final`, which the edit form sends to unlock
+        a bevilling and which this process has no business changing.
+    """
+
+    endpoint, api_key = _api()
+
+    felter: dict = {"esdh_noegle": esdh_noegle}
+
+    if esdh_url:
+        felter["esdh_url"] = esdh_url
+
+    response = requests.put(
+        f"{endpoint}/bevilling/{bevilling_id}",
+        json=felter,
+        headers={"X-API-Key": api_key},
+        timeout=config.API_TIMEOUT,
+    )
+
+    if not response.ok:
+        raise requests.HTTPError(
+            f"{response.status_code} fra opdatering af esdh_noegle: {response.text}",
+            response=response,
+        )
+
+    try:
+        return response.json()
+    except ValueError:
+        return {"raw": response.text}
