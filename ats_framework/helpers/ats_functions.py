@@ -51,7 +51,7 @@ def get_workqueue_items(workqueue: Workqueue, return_data=False):
     return workqueue_items
 
 
-def genaktiver_item(item_id: int) -> bool:
+def reactivate_item(item_id: int) -> bool:
     """Put a work item back in the queue by setting its status to "new".
 
     Args:
@@ -91,11 +91,11 @@ def genaktiver_item(item_id: int) -> bool:
         )
         response.raise_for_status()
         return True
-    except requests.RequestException as fejl:
+    except requests.RequestException as error:
         # Logged rather than raised: failing to retry one item must not stop
         # the rest of the run from queueing new work.
         logging.getLogger(__name__).warning(
-            "Kunne ikke genaktivere workitem %s: %s", item_id, fejl
+            "Kunne ikke genaktivere workitem %s: %s", item_id, error
         )
         return False
 

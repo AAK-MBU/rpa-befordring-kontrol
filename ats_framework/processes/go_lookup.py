@@ -30,12 +30,12 @@ logger = logging.getLogger(__name__)
 
 
 # The case-type prefix befordring cases live under.
-_SAGSTYPE = "PPR"
+_CASE_TYPE_PREFIX = "PPR"
 
 # The sub-case title every befordring case carries. Matched with "Contains"
 # rather than equality, so the child's name in the title — diacritics,
 # truncation, middle names — never affects the match.
-_SUBCASE_TITEL = "Kørsel til "
+_SUBCASE_TITLE = "Kørsel til "
 
 # A befordring key is a sub-case — "PPR-2026-123456-001" — but the page a
 # caseworker opens is the BASE case. Group 1 drops the sub-case suffix.
@@ -46,7 +46,7 @@ _PPR_SAG = re.compile(r"^(PPR-\d{4}-\d+)(?:-\d+)?$", re.IGNORECASE)
 # attributes. PPR01 is a per-case system id that exists nowhere in the
 # befordring database, which is the whole reason this lookup is needed.
 _GO_CASE_URL_ATTRIB = "ows_CaseUrl"
-_GO_SIDE = "SitePages/Home.aspx"
+_GO_PAGE = "SitePages/Home.aspx"
 
 # GO has TWO hosts, and they are not the same:
 #
@@ -57,10 +57,10 @@ _GO_SIDE = "SitePages/Home.aspx"
 # The link stored on the bevilling must point at the LATTER. Built from the
 # API endpoint, a caseworker would get a link to a host she cannot reach —
 # and it would look right until she clicked it.
-_GO_BRUGER_BASE = os.getenv("GO_BROWSE_BASE", "https://go.aarhuskommune.dk").rstrip("/")
+_GO_BROWSE_BASE = os.getenv("GO_BROWSE_BASE", "https://go.aarhuskommune.dk").rstrip("/")
 
 
-def hent_go_legitimation() -> tuple[str, str, str]:
+def get_go_credentials() -> tuple[str, str, str]:
     """GO endpoint, username and password from the RPA credential store.
 
     Returns:
@@ -80,12 +80,12 @@ def hent_go_legitimation() -> tuple[str, str, str]:
         )
 
 
-def find_kontakt(go: tuple[str, str, str], cpr: str) -> tuple[str, str] | None:
+def find_contact(go: tuple[str, str, str], cpr: str) -> tuple[str, str] | None:
     """The citizen's name and GO contact id, or None if GO does not know them.
 
     Args:
         go:
-            (endpoint, username, password) from hent_go_legitimation().
+            (endpoint, username, password) from get_go_credentials().
 
         cpr:
             The student's CPR, without hyphens.
@@ -94,13 +94,13 @@ def find_kontakt(go: tuple[str, str, str], cpr: str) -> tuple[str, str] | None:
         (full_name, go_id), or None.
     """
 
-    endpoint, brugernavn, kodeord = go
+    endpoint, username, password = go
 
     response = contacts.contact_lookup(
         cpr,
         f"{endpoint}/borgersager/_goapi/contacts/readitem",
-        brugernavn,
-        kodeord,
+        username,
+        password,
     )
 
     if not response.ok:
@@ -114,16 +114,16 @@ def find_kontakt(go: tuple[str, str, str], cpr: str) -> tuple[str, str] | None:
     return person["FullName"], person["ID"]
 
 
-def find_befordringssag(
-    go: tuple[str, str, str], navn: str, go_id: str, cpr: str
+def find_befordring_case(
+    go: tuple[str, str, str], name: str, go_id: str, cpr: str
 ) -> str | None:
     """The student's "Kørsel til …" sub-case id, or None.
 
     Args:
         go:
-            (endpoint, username, password) from hent_go_legitimation().
+            (endpoint, username, password) from get_go_credentials().
 
-        navn:
+        name:
             The citizen's full name as GO holds it.
 
         go_id:
@@ -148,24 +148,24 @@ def find_befordringssag(
     """
 
     search_data = CaseDataJson().simple_search_case_data_json(
-        case_type_prefix=_SAGSTYPE,
+        case_type_prefix=_CASE_TYPE_PREFIX,
         field_properties={
             "ows_CCMContactData": {
-                "value": f"{navn};#{go_id};#{cpr};#;#",
+                "value": f"{name};#{go_id};#{cpr};#;#",
                 "comparison": "Equal",
             },
-            "ows_Title": {"value": _SUBCASE_TITEL, "comparison": "Contains"},
+            "ows_Title": {"value": _SUBCASE_TITLE, "comparison": "Contains"},
         },
         returned_cases_number="200",
     )
 
-    endpoint, brugernavn, kodeord = go
+    endpoint, username, password = go
 
     response = cases.find_case_by_case_properties(
         search_data,
         f"{endpoint}/_goapi/cases/findbycaseproperties",
-        brugernavn,
-        kodeord,
+        username,
+        password,
     )
 
     if not response.ok:
@@ -198,14 +198,14 @@ def find_befordringssag(
     return fundne[0].get("CaseID")
 
 
-def find_sags_url(go: tuple[str, str, str], sags_id: str) -> str | None:
+def find_case_url(go: tuple[str, str, str], case_id: str) -> str | None:
     """The browser URL for a case, or None when it cannot be resolved.
 
     Args:
         go:
-            (endpoint, username, password) from hent_go_legitimation().
+            (endpoint, username, password) from get_go_credentials().
 
-        sags_id:
+        case_id:
             A case key, with or without a sub-case suffix.
 
     Returns:
@@ -229,24 +229,24 @@ def find_sags_url(go: tuple[str, str, str], sags_id: str) -> str | None:
         child's case.
     """
 
-    match = _PPR_SAG.match(str(sags_id).strip())
+    match = _PPR_SAG.match(str(case_id).strip())
 
     if match is None:
-        logger.warning("Sags-id ser ikke ud som en PPR-sag: %r", sags_id)
+        logger.warning("Sags-id ser ikke ud som en PPR-sag: %r", case_id)
         return None
 
     base = match.group(1)
-    endpoint, brugernavn, kodeord = go
+    endpoint, username, password = go
 
     try:
         response = requests.get(
             f"{endpoint}/_goapi/Cases/Metadata/{base}",
             headers={"Content-Type": "application/json"},
-            auth=HttpNtlmAuth(brugernavn, kodeord),
+            auth=HttpNtlmAuth(username, password),
             timeout=config.API_TIMEOUT,
         )
-    except requests.RequestException as fejl:
-        logger.warning("Kunne ikke hente metadata for %s: %s", base, fejl)
+    except requests.RequestException as error:
+        logger.warning("Kunne ikke hente metadata for %s: %s", base, error)
         return None
 
     if not response.ok:
@@ -261,8 +261,8 @@ def find_sags_url(go: tuple[str, str, str], sags_id: str) -> str | None:
     try:
         metadata = response.json().get("Metadata", "")
         relativ = ET.fromstring(metadata).attrib.get(_GO_CASE_URL_ATTRIB, "")
-    except (ValueError, ET.ParseError) as fejl:
-        logger.warning("Kunne ikke læse metadata for %s: %s", base, fejl)
+    except (ValueError, ET.ParseError) as error:
+        logger.warning("Kunne ikke læse metadata for %s: %s", base, error)
         return None
 
     relativ = relativ.strip().strip("/")
@@ -272,4 +272,4 @@ def find_sags_url(go: tuple[str, str, str], sags_id: str) -> str | None:
         return None
 
     # Built from the BROWSER host, not the API endpoint just called.
-    return f"{_GO_BRUGER_BASE}/{relativ}/{_GO_SIDE}"
+    return f"{_GO_BROWSE_BASE}/{relativ}/{_GO_PAGE}"

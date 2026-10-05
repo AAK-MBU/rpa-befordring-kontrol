@@ -46,13 +46,13 @@ _SELECT_FORMULARER = f"""
     FROM
         [RPA].[journalizing].[view_Journalizing]
     WHERE
-        form_type IN ({", ".join("?" for _ in config.FORMULAR_TYPER)})
+        form_type IN ({", ".join("?" for _ in config.SUBMISSION_FORM_TYPES)})
     AND form_submitted_date >= ?
     /* ISNULL so a row with no status is KEPT. Written plainly as
        "status <> 'Manual'" the comparison would be UNKNOWN for NULL and the
        row would be dropped — turning a guard that is meant to fail open into
        one that silently discards applications. */
-    AND ISNULL(status, N'') NOT IN ({", ".join("?" for _ in config.EKSKLUDEREDE_STATUSSER)})
+    AND ISNULL(status, N'') NOT IN ({", ".join("?" for _ in config.EXCLUDED_STATUSES)})
     ORDER BY
         form_submitted_date ASC
 """
@@ -72,7 +72,7 @@ def _connection_string() -> str:
     return conn_string
 
 
-def hent_formularer() -> list[dict]:
+def get_submissions() -> list[dict]:
     """Every submission to the three transport forms since the cutoff.
 
     Returns:
@@ -86,47 +86,45 @@ def hent_formularer() -> list[dict]:
     """
 
     params = [
-        *config.FORMULAR_TYPER,
-        config.TIDLIGSTE_FORMULAR_DATO,
-        *config.EKSKLUDEREDE_STATUSSER,
+        *config.SUBMISSION_FORM_TYPES,
+        config.EARLIEST_SUBMISSION_DATE,
+        *config.EXCLUDED_STATUSES,
     ]
 
     with pyodbc.connect(_connection_string(), timeout=config.DB_TIMEOUT) as conn:
         cursor = conn.cursor()
         cursor.execute(_SELECT_FORMULARER, params)
-        kolonner = [kolonne[0] for kolonne in cursor.description]
-        raekker = [
-            dict(zip(kolonner, raekke, strict=True)) for raekke in cursor.fetchall()
-        ]
+        columns = [kolonne[0] for kolonne in cursor.description]
+        rows = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
 
-    formularer = []
+    submissions = []
 
-    for raekke in raekker:
+    for row in rows:
         try:
-            form_data = json.loads(raekke["form_data"])
-        except (TypeError, ValueError) as fejl:
+            form_data = json.loads(row["form_data"])
+        except (TypeError, ValueError) as error:
             logger.error(
                 "Springer formular %s over - form_data kunne ikke læses: %s",
-                raekke.get("form_id"),
-                fejl,
+                row.get("form_id"),
+                error,
             )
             continue
 
-        formularer.append(
+        submissions.append(
             {
-                "form_id": str(raekke["form_id"]),
-                "form_type": raekke["form_type"],
+                "form_id": str(row["form_id"]),
+                "form_type": row["form_type"],
                 "form_data": form_data,
-                "form_submitted_date": str(raekke["form_submitted_date"]),
+                "form_submitted_date": str(row["form_submitted_date"]),
             }
         )
 
     logger.info(
         "Fandt %d formular(er) af typerne %s indsendt %s eller senere (status %s springes over)",
-        len(formularer),
-        ", ".join(config.FORMULAR_TYPER),
-        config.TIDLIGSTE_FORMULAR_DATO,
-        ", ".join(config.EKSKLUDEREDE_STATUSSER),
+        len(submissions),
+        ", ".join(config.SUBMISSION_FORM_TYPES),
+        config.EARLIEST_SUBMISSION_DATE,
+        ", ".join(config.EXCLUDED_STATUSES),
     )
 
-    return formularer
+    return submissions

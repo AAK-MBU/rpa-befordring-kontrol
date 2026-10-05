@@ -16,7 +16,7 @@ from ats_framework.core.finalize_process import finalize_process
 from ats_framework.core.process_item import process_item
 from ats_framework.core.queue_handler import (
     concurrent_add,
-    genaktiver_ventende,
+    reactivate_pending,
     retrieve_items_for_queue,
 )
 from ats_framework.helpers import ats_functions, config
@@ -33,12 +33,12 @@ async def populate_queue(workqueue: Workqueue):
 
     # return_data=True because the status is needed to decide which existing
     # items deserve another attempt.
-    eksisterende = ats_functions.get_workqueue_items(workqueue, return_data=True)
+    existing = ats_functions.get_workqueue_items(workqueue, return_data=True)
 
     # Retry unresolved esdh items in place, BEFORE the skip below — they are
     # then "new" again and simply stay in the queue rather than being added a
-    # second time. See queue_handler.genaktiver_ventende.
-    genaktiver_ventende(eksisterende)
+    # second time. See queue_handler.reactivate_pending.
+    reactivate_pending(existing)
 
     new_items: list[dict] = []
     for item in items_to_queue:
@@ -47,7 +47,7 @@ async def populate_queue(workqueue: Workqueue):
         # Presence alone is enough: anything that deserved another attempt was
         # reactivated above, so a reference the queue already holds is never
         # added a second time — whatever its status.
-        if reference and reference in eksisterende:
+        if reference and reference in existing:
             logger.info("Reference %s springes over (allerede i kø)", reference)
         else:
             new_items.append(item)

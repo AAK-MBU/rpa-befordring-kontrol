@@ -21,14 +21,14 @@ from ats_framework.helpers import config
 
 logger = logging.getLogger(__name__)
 
-_TIDSZONE = ZoneInfo("Europe/Copenhagen")
+_TIMEZONE = ZoneInfo("Europe/Copenhagen")
 
 
-def _unix_tid(vaerdi) -> str | None:
+def _unix_time(value) -> str | None:
     """Convert a stored completion time to the Unix timestamp the API expects.
 
     Args:
-        vaerdi:
+        value:
             The value from entity.completed[0].value.
 
     Returns:
@@ -50,25 +50,25 @@ def _unix_tid(vaerdi) -> str | None:
         23:30 UTC is already the next day here.
     """
 
-    if vaerdi in (None, ""):
+    if value in (None, ""):
         return None
 
-    tekst = str(vaerdi).strip()
+    text = str(value).strip()
 
     # Already a timestamp — tolerated so the function is safe to apply twice.
-    if tekst.isdigit():
-        return tekst
+    if text.isdigit():
+        return text
 
     try:
-        tidspunkt = datetime.fromisoformat(tekst)
+        tidspunkt = datetime.fromisoformat(text)
     except ValueError:
-        logger.warning("Kunne ikke læse completed-tidsstempel: %r", vaerdi)
+        logger.warning("Kunne ikke læse completed-tidsstempel: %r", value)
         return None
 
     # A value with no offset is local time; that is what a bare timestamp means
     # in this data.
     if tidspunkt.tzinfo is None:
-        tidspunkt = tidspunkt.replace(tzinfo=_TIDSZONE)
+        tidspunkt = tidspunkt.replace(tzinfo=_TIMEZONE)
 
     return str(int(tidspunkt.timestamp()))
 
@@ -87,7 +87,7 @@ def _api() -> tuple[str, str]:
     return endpoint.rstrip("/"), api_key
 
 
-def byg_payload(form_id: str, form_type: str, form_data: dict) -> dict:
+def build_payload(form_id: str, form_type: str, form_data: dict) -> dict:
     """Flatten a stored submission into the shape the API expects.
 
     Args:
@@ -123,11 +123,11 @@ def byg_payload(form_id: str, form_type: str, form_data: dict) -> dict:
     payload["form_id"] = form_id
 
     try:
-        raa_completed = form_data["entity"]["completed"][0]["value"]
+        raw_completed = form_data["entity"]["completed"][0]["value"]
     except (KeyError, IndexError, TypeError):
-        raa_completed = None
+        raw_completed = None
 
-    completed = _unix_tid(raa_completed)
+    completed = _unix_time(raw_completed)
 
     if completed is None:
         logger.warning(
@@ -140,7 +140,7 @@ def byg_payload(form_id: str, form_type: str, form_data: dict) -> dict:
     return payload
 
 
-def opret_bevilling(cpr: str, payload: dict) -> dict:
+def create_bevilling(cpr: str, payload: dict) -> dict:
     """Create the bevilling for one submission.
 
     Args:
@@ -148,7 +148,7 @@ def opret_bevilling(cpr: str, payload: dict) -> dict:
             The student's CPR.
 
         payload:
-            The flattened submission from byg_payload.
+            The flattened submission from build_payload.
 
     Returns:
         The API's JSON response. "status" is "created" or "already_exists".
@@ -182,11 +182,12 @@ def opret_bevilling(cpr: str, payload: dict) -> dict:
         return {"status": "ukendt", "raw": response.text}
 
 
-def hent_bevillinger_uden_esdh_noegle() -> list[dict]:
-    """Bevillinger that have no ESDH key yet, oldest first.
+def get_bevillinger_missing_esdh() -> list[dict]:
+    """Bevillinger missing their ESDH key, their link, or both. Oldest first.
 
     Returns:
-        A list of dictionaries with bevilling_id, cpr_elev and created_at.
+        A list of dictionaries with bevilling_id, cpr_elev, esdh_noegle and
+        created_at. esdh_noegle is set on the rows that only need a link.
 
     Raises:
         requests.HTTPError:
@@ -196,22 +197,22 @@ def hent_bevillinger_uden_esdh_noegle() -> list[dict]:
     endpoint, api_key = _api()
 
     response = requests.get(
-        f"{endpoint}/bevilling/mangler_esdh_noegle",
-        params={"maks_antal": config.ESDH_MAKS_PR_KOERSEL},
+        f"{endpoint}/bevilling/mangler_esdh",
+        params={"maks_antal": config.ESDH_MAX_PER_RUN},
         headers={"X-API-Key": api_key},
         timeout=config.API_TIMEOUT,
     )
 
     if not response.ok:
         raise requests.HTTPError(
-            f"{response.status_code} fra mangler_esdh_noegle: {response.text}",
+            f"{response.status_code} fra mangler_esdh: {response.text}",
             response=response,
         )
 
     return response.json()
 
 
-def saet_esdh_noegle(
+def set_esdh_key(
     bevilling_id: int, esdh_noegle: str, esdh_url: str | None = None
 ) -> dict:
     """Write the resolved case key, and its link, onto a bevilling.
@@ -244,14 +245,14 @@ def saet_esdh_noegle(
 
     endpoint, api_key = _api()
 
-    felter: dict = {"esdh_noegle": esdh_noegle}
+    fields: dict = {"esdh_noegle": esdh_noegle}
 
     if esdh_url:
-        felter["esdh_url"] = esdh_url
+        fields["esdh_url"] = esdh_url
 
     response = requests.put(
         f"{endpoint}/bevilling/{bevilling_id}",
-        json=felter,
+        json=fields,
         headers={"X-API-Key": api_key},
         timeout=config.API_TIMEOUT,
     )

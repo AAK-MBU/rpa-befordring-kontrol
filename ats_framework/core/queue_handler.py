@@ -26,10 +26,10 @@ def retrieve_items_for_queue() -> list[dict]:
         branch there.
     """
 
-    return [*_opret_bevilling_emner(), *_esdh_noegle_emner()]
+    return [*_create_bevilling_items(), *_esdh_key_items()]
 
 
-def _opret_bevilling_emner() -> list[dict]:
+def _create_bevilling_items() -> list[dict]:
     """Submissions to the three transport forms that may need a bevilling.
 
     Notes:
@@ -45,15 +45,15 @@ def _opret_bevilling_emner() -> list[dict]:
 
     return [
         {
-            "reference": f"{config.TYPE_OPRET_BEVILLING}:{formular['form_id']}",
-            "data": {"type": config.TYPE_OPRET_BEVILLING, **formular},
+            "reference": f"{config.TYPE_CREATE_BEVILLING}:{submission['form_id']}",
+            "data": {"type": config.TYPE_CREATE_BEVILLING, **submission},
         }
-        for formular in journalizing.hent_formularer()
+        for submission in journalizing.get_submissions()
     ]
 
 
-def _esdh_noegle_emner() -> list[dict]:
-    """Bevillinger with no ESDH key, for resolution against GO.
+def _esdh_key_items() -> list[dict]:
+    """Bevillinger missing their ESDH key or link, for resolution against GO.
 
     Notes:
         Unlike the create check, "not yet" is the NORMAL first answer here: a
@@ -65,14 +65,14 @@ def _esdh_noegle_emner() -> list[dict]:
         the moment it is least likely to succeed.
     """
 
-    bevillinger = befordring_api.hent_bevillinger_uden_esdh_noegle()
+    bevillinger = befordring_api.get_bevillinger_missing_esdh()
 
-    logger.info("Fandt %d bevilling(er) uden esdh_noegle", len(bevillinger))
+    logger.info("Fandt %d bevilling(er) uden esdh-nøgle eller -link", len(bevillinger))
 
     return [
         {
-            "reference": f"{config.TYPE_ESDH_NOEGLE}:{bevilling['bevilling_id']}",
-            "data": {"type": config.TYPE_ESDH_NOEGLE, **bevilling},
+            "reference": f"{config.TYPE_ESDH_KEY}:{bevilling['bevilling_id']}",
+            "data": {"type": config.TYPE_ESDH_KEY, **bevilling},
         }
         for bevilling in bevillinger
     ]
@@ -81,14 +81,14 @@ def _esdh_noegle_emner() -> list[dict]:
 # ATS item statuses that are terminal until something moves them. "new" and
 # "in progress" are still going to be attempted, and "completed" succeeded —
 # none of those three is this process's business.
-_AFSLUTTEDE_UDEN_SUCCES = ("failed", "pending user action")
+_UNSUCCESSFUL_STATUSES = ("failed", "pending user action")
 
 
-def genaktiver_ventende(eksisterende: dict) -> int:
+def reactivate_pending(existing: dict) -> int:
     """Put unresolved esdh items back in the queue, in place.
 
     Args:
-        eksisterende:
+        existing:
             {reference: workqueue row}, from get_workqueue_items(return_data=True).
 
     Returns:
@@ -111,28 +111,28 @@ def genaktiver_ventende(eksisterende: dict) -> int:
         last would be true.
     """
 
-    genaktiveret = 0
+    reactivated = 0
 
-    for reference, raekke in eksisterende.items():
-        if not reference.startswith(f"{config.TYPE_ESDH_NOEGLE}:"):
+    for reference, row in existing.items():
+        if not reference.startswith(f"{config.TYPE_ESDH_KEY}:"):
             continue
 
-        if str(raekke.get("status") or "").lower() not in _AFSLUTTEDE_UDEN_SUCCES:
+        if str(row.get("status") or "").lower() not in _UNSUCCESSFUL_STATUSES:
             continue
 
-        item_id = raekke.get("id")
+        item_id = row.get("id")
 
         if item_id is None:
             continue
 
-        if ats_functions.genaktiver_item(item_id):
-            genaktiveret += 1
+        if ats_functions.reactivate_item(item_id):
+            reactivated += 1
             logger.info("Genaktiverede %s til nyt forsøg", reference)
 
-    if genaktiveret:
-        logger.info("Genaktiverede %d esdh-emne(r)", genaktiveret)
+    if reactivated:
+        logger.info("Genaktiverede %d esdh-emne(r)", reactivated)
 
-    return genaktiveret
+    return reactivated
 
 
 def create_sort_key(item: dict) -> str:

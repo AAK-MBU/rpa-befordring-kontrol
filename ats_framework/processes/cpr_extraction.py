@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 # The two forms that ask for the child directly: picked via MitID, or typed.
-_BARN_FELTER = ("cpr_nummer_barn_mitid", "cpr_nummer_barn_manuelt")
+_CHILD_CPR_FIELDS = ("cpr_nummer_barn_mitid", "cpr_nummer_barn_manuelt")
 
 # Midlertidig kørsel has four CPR fields, because three kinds of applicant use
 # it:
@@ -26,7 +26,7 @@ _BARN_FELTER = ("cpr_nummer_barn_mitid", "cpr_nummer_barn_manuelt")
 #               cpr_nummer_mitid IS the pupil
 #
 # So any of these three identifies the student directly...
-_MIDLERTIDIG_ELEV_FELTER = (
+_MIDLERTIDIG_STUDENT_CPR_FIELDS = (
     "cpr_nummer_elev",
     "cpr_nummer_barn_mitid",
     "cpr_nummer_barn_manuelt",
@@ -34,17 +34,17 @@ _MIDLERTIDIG_ELEV_FELTER = (
 
 # ...and the logged-in user is only the student when none of them is filled.
 # Reading this first would treat a parent's own CPR as the child's.
-_MIDLERTIDIG_FALDBACK = "cpr_nummer_mitid"
+_MIDLERTIDIG_FALLBACK_FIELD = "cpr_nummer_mitid"
 
 
-def _foerste_udfyldte(data: dict, felter) -> str | None:
-    """The first of `felter` that holds a value, with hyphens stripped."""
+def _first_filled(data: dict, fields) -> str | None:
+    """The first of `fields` that holds a value, with hyphens stripped."""
 
-    for felt in felter:
-        vaerdi = data.get(felt, "")
+    for felt in fields:
+        value = data.get(felt, "")
 
-        if vaerdi:
-            return str(vaerdi).replace("-", "").strip() or None
+        if value:
+            return str(value).replace("-", "").strip() or None
 
     return None
 
@@ -69,15 +69,15 @@ def find_cpr(form_type: str, form_data: dict) -> str | None:
         "ansoegning_om_koersel_med_skoleb",
         "ny_ansoegning_om_koersel_af_skol",
     ):
-        return _foerste_udfyldte(data, _BARN_FELTER)
+        return _first_filled(data, _CHILD_CPR_FIELDS)
 
     if form_type == "ny_ansoegning_om_midlertidig_koe":
-        elev = _foerste_udfyldte(data, _MIDLERTIDIG_ELEV_FELTER)
+        elev = _first_filled(data, _MIDLERTIDIG_STUDENT_CPR_FIELDS)
 
         if elev:
             return elev
 
-        return _foerste_udfyldte(data, (_MIDLERTIDIG_FALDBACK,))
+        return _first_filled(data, (_MIDLERTIDIG_FALLBACK_FIELD,))
 
     logger.warning("Ukendt formulartype uden CPR-regel: %s", form_type)
 
