@@ -37,16 +37,63 @@ _CASE_TYPE_PREFIX = "PPR"
 # truncation, middle names — never affects the match.
 _SUBCASE_TITLE = "Kørsel til "
 
-# A befordring key is a sub-case — "PPR-2026-123456-001" — but the page a
-# caseworker opens is the BASE case. Group 1 drops the sub-case suffix.
-_PPR_SAG = re.compile(r"^(PPR-\d{4}-\d+)(?:-\d+)?$", re.IGNORECASE)
+# A befordring key is a sub-case — "PPR-2026-123456-001". Both halves are
+# needed and they are used for different things:
+#
+#   group 1  the BASE case, which is what GO's metadata call accepts and what
+#            ows_CaseUrl comes back describing.
+#   group 2  the sub-case number, which selects the foranstaltningsmappe
+#            within that case. Optional in the pattern only as a safety net —
+#            every key in the database carries one.
+_PPR_SAG = re.compile(r"^(PPR-\d{4}-\d+)(?:-(\d+))?$", re.IGNORECASE)
 
 # GO answers the metadata call with JSON whose "Metadata" field is an XML row.
 # The relative case path — "cases/PPR01/PPR-2026-123456" — is one of its
 # attributes. PPR01 is a per-case system id that exists nowhere in the
 # befordring database, which is the whole reason this lookup is needed.
 _GO_CASE_URL_ATTRIB = "ows_CaseUrl"
+
+# The base case's own front page. Only used when a key carries no sub-case
+# number, which should not happen — see _subcase_page.
 _GO_PAGE = "SitePages/Home.aspx"
+
+# The foranstaltningsmappe inside a case. Caseworkers asked for this rather
+# than the PPR case front page: the befordring sag is the sub-case, and landing
+# on the parent means another click to find it.
+#
+# CCMSubID appears twice because GO wants it both as the list filter and as the
+# page's own parameter; sending only one leaves the page on the unfiltered
+# list. Zero-padded exactly as the key spells it ("006", not "6") — the two are
+# different URLs and only the padded one resolves.
+_GO_SUBCASE_PAGE = (
+    "SubNav/SubCase.aspx"
+    "?FilterField1=CCMSubID&FilterValue1={subid}&CCMSubID={subid}"
+)
+
+
+def _subcase_page(subid: str | None) -> str:
+    """The page part of the URL for a sub-case number.
+
+    Falls back to the base case's front page when there is no number. A link
+    to the parent case is worse than one straight to the foranstaltningsmappe,
+    but it is still the right child's case — and that is the line this module
+    draws everywhere: never guess a link, but a less specific correct one beats
+    none at all.
+
+    Args:
+        subid:
+            The sub-case number from the key, or None.
+
+    Returns:
+        A relative page path, ready to append to the case path.
+    """
+
+    if not subid:
+        return _GO_PAGE
+
+    # zfill is belt-and-braces: every stored key is already padded, and this
+    # leaves a padded value untouched while rescuing an unpadded one.
+    return _GO_SUBCASE_PAGE.format(subid=subid.zfill(3))
 
 # GO has TWO hosts, and they are not the same:
 #
@@ -221,8 +268,10 @@ def find_case_url(go: tuple[str, str, str], case_id: str) -> str | None:
         PPR01 is a per-case system id, which is why the URL cannot be composed
         from the key alone — and why it is stored rather than derived.
 
-        Looked up on the BASE case: the sub-case suffix does not change the
-        page the link opens, and a student's bevillinger share it.
+        Looked up on the BASE case — that is what the metadata call accepts —
+        but the URL returned points at the sub-case, the foranstaltningsmappe
+        the befordring sag actually lives in. The sub-case number comes from
+        the key, so no second lookup is needed.
 
         Returns None on anything unexpected. A missing link is a cosmetic gap
         the next run retries; a wrong one sends a caseworker into another
@@ -236,6 +285,7 @@ def find_case_url(go: tuple[str, str, str], case_id: str) -> str | None:
         return None
 
     base = match.group(1)
+    subid = match.group(2)
     endpoint, username, password = go
 
     try:
@@ -272,4 +322,4 @@ def find_case_url(go: tuple[str, str, str], case_id: str) -> str | None:
         return None
 
     # Built from the BROWSER host, not the API endpoint just called.
-    return f"{_GO_BROWSE_BASE}/{relativ}/{_GO_PAGE}"
+    return f"{_GO_BROWSE_BASE}/{relativ}/{_subcase_page(subid)}"
