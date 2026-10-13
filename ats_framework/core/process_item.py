@@ -139,9 +139,24 @@ def _set_esdh_key(item_data: dict):
     # Reusing the key skips the contact lookup and the case search entirely:
     # two GO calls saved, and no risk of a second search landing on a
     # different case than the one the bevilling already names.
+    #
+    # Only a key GO could actually resolve counts as one. The field is typed
+    # by hand, and a value that is merely non-empty is not enough: a pasted
+    # case URL would be carried all the way to find_case_url, refused there,
+    # and the item would then fail on every single run, because the raise
+    # below only fires when a key is present. Treating an unusable key as
+    # absent sends it through the lookup instead, which overwrites it.
     case_id = (item_data.get("esdh_noegle") or "").strip()
+    genbrugt_noegle = go_lookup.is_valid_case_id(case_id)
 
-    if not case_id:
+    if not genbrugt_noegle:
+        if case_id:
+            logger.warning(
+                "Bevilling %s har en ubrugelig esdh_noegle (%r) - slår sagen op på ny",
+                bevilling_id,
+                case_id,
+            )
+
         kontakt = go_lookup.find_contact(go, cpr)
 
         if kontakt is None:
@@ -161,10 +176,14 @@ def _set_esdh_key(item_data: dict):
 
     case_url = go_lookup.find_case_url(go, case_id)
 
-    if case_url is None and item_data.get("esdh_noegle"):
+    if case_url is None and genbrugt_noegle:
         # Nothing new to write: the key is already stored and the link is
         # still unresolvable. Raised rather than silently completed so the
         # item is offered again on the next run.
+        #
+        # Deliberately not "esdh_noegle is set" — where the stored key was
+        # unusable, the one just looked up IS new and must be written, link
+        # or no link.
         raise BusinessError(
             f"Kunne ikke udlede link for bevilling {bevilling_id} ({case_id}) - prøves igen"
         )

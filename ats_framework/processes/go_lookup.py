@@ -245,6 +245,28 @@ def find_befordring_case(
     return fundne[0].get("CaseID")
 
 
+def is_valid_case_id(case_id: str | None) -> bool:
+    """Whether a stored key is one GO could actually resolve.
+
+    The same pattern find_case_url matches on, exposed so a caller can ask
+    BEFORE spending GO calls on a value that will be refused anyway.
+
+    It exists because esdh_noegle is typed by hand in Befordringssystemet, and
+    a caseworker pasting the case's browser URL into that field is an easy
+    mistake to make — the field is right next to the link she copied it from.
+    Such a value is non-empty, so emptiness alone does not catch it.
+
+    Args:
+        case_id:
+            The stored key, or None.
+
+    Returns:
+        True where the value looks like a PPR case key.
+    """
+
+    return _PPR_SAG.match(str(case_id or "").strip()) is not None
+
+
 def find_case_url(go: tuple[str, str, str], case_id: str) -> str | None:
     """The browser URL for a case, or None when it cannot be resolved.
 
