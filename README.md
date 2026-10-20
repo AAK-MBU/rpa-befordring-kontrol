@@ -71,6 +71,21 @@ De to kontroller har modsatte regler:
   en bevilling kan findes, før dens indsendelse er journaliseret, og dermed før
   GO-sagen findes.
 
+Derfor lander de to fejl også forskelligt. Fejler et `opret`-emne, rejses
+fejlen som en `ProcessError` — selv om diagnosen er en forretningsfejl — og
+emnet får status `failed` **og** en mail til Error Email med det samme, i
+stedet for en tavs `pending user action`. En indsendelse, der ikke blev til en
+bevilling, ligger nemlig i ingen kø overhovedet: ikke i Befordringssystemet,
+hvor en sagsbehandler ville se den, og ikke andre steder. Ingen opdager, at
+den mangler, og borgeren venter bare — og en ansøgning om **midlertidig
+kørsel** skal besvares inden for fire dage.
+
+Mailen er ikke et nyt forsøg. Emnet står som `failed`, indtil et menneske
+genaktiverer det i ATS; mailen *er* signalet om, at nogen skal gøre det.
+
+Et `esdh`-emne beholder sin `BusinessError`, og dermed `pending user action`
+uden mail — "ikke endnu" er ikke noget, nogen skal vækkes af.
+
 `queue_handler.genaktiver_ventende` sætter ventende og fejlede `esdh`-emner
 tilbage til status `new` ved starten af hver `--queue`-kørsel. Emnet
 genbruges altså — der oprettes ikke et nyt.

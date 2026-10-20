@@ -27,16 +27,51 @@ def process_item(item_data: dict, item_reference: str):
 
     Raises:
         BusinessError:
-            Where the item itself needs a human.
+            Where the item needs a human and waiting for one is acceptable.
+            The esdh check only - see the create branch below for why.
 
         ProcessError:
-            Where the problem is ours or an API's and a retry may help.
+            Where the problem is ours or an API's and a retry may help, and -
+            for the create check - where the item needs a human NOW.
     """
 
     type_code = item_data.get("type", config.TYPE_CREATE_BEVILLING)
 
     if type_code == config.TYPE_CREATE_BEVILLING:
-        _create_bevilling(item_data)
+        try:
+            _create_bevilling(item_data)
+        except BusinessError as error:
+            # Re-raised as a ProcessError, which is NOT what it is. The
+            # submission needs a human and running it again changes nothing -
+            # the diagnosis was right. It is the HANDLING that was wrong.
+            #
+            # A BusinessError parks the item at "pending user action" without
+            # a word to anybody, and a submission that did not become a
+            # bevilling sits in no queue at all: not in Befordringssystemet,
+            # where a caseworker would see it, and nowhere else either.
+            # Nothing downstream ever notices it is missing, and the family
+            # simply waits. An application for midlertidig koersel has four
+            # days to be answered - less than the time it takes for somebody
+            # to open ATS and look.
+            #
+            # So it is raised as the one thing main.py already fails and mails
+            # about, rather than growing a second way of saying "loudly".
+            #
+            # The esdh check deliberately keeps its BusinessError. There "not
+            # yet" is the normal first answer - the GO case does not exist
+            # until the submission is journalized - and those resolve
+            # themselves on a later run, so a mail every night would be noise.
+            # See queue_handler.reactivate_pending.
+            #
+            # The formular is named here because this message is what the
+            # error mail shows. CPR deliberately is not: that mail is
+            # unencrypted.
+            raise ProcessError(
+                f"Bevilling blev ikke oprettet for formular "
+                f"{item_data.get('form_id')} ({item_data.get('form_type')}): "
+                f"{error}"
+            ) from error
+
         return
 
     if type_code == config.TYPE_ESDH_KEY:
@@ -53,6 +88,10 @@ def _call_api(funktion, *args, **kwargs):
     that no longer exists. The same request would get the same answer, so a
     human is the only way forward. Everything else — 5xx, timeout, connection
     refused — is worth another run.
+
+    That is the diagnosis, not what happens next. The create branch in
+    process_item escalates a 4xx of its own to a ProcessError so it fails
+    loudly and is mailed; the distinction drawn here is what lets it.
     """
 
     try:
