@@ -56,7 +56,7 @@ def handle_error(
                 error=error,
                 process_name=context.process_name,
             )
-        except Exception:
+        except Exception as mail_error:
             # The mail is the notification, not the work.
             #
             # Caught for two reasons. It must not take the rest of the run
@@ -70,10 +70,16 @@ def handle_error(
             # told", and without this line there is nothing in the log to say
             # the telling was what broke. Hence error level, with the
             # traceback.
+            # Type and message inline, not only in exc_info. A log viewer that
+            # shows one line per record would otherwise reduce this to "could
+            # not send", which says nothing about which of the four steps in
+            # send_error_email gave up.
             logger.error(
-                "Kunne ikke sende fejlmail for %s - fejlen ovenfor er stadig "
-                "registreret på emnet",
+                "Kunne ikke sende fejlmail for %s (%s: %s) - fejlen ovenfor er "
+                "stadig registreret på emnet",
                 context.process_name,
+                type(mail_error).__name__,
+                mail_error,
                 exc_info=True,
             )
 
@@ -144,6 +150,18 @@ def send_error_email(
     msg.add_alternative(html_message, subtype="html")
 
     # Send message
-    with smtplib.SMTP(smtp_server, smtp_port) as smtp:
-        smtp.starttls()
-        smtp.send_message(msg)
+    #
+    # Named on the way out. Reaching this line proves the four constants
+    # resolved, so a failure here is the hop to the mail server itself - a
+    # blocked port, a server that will not do STARTTLS, a refused relay - and
+    # the one line handle_error logs should be enough to tell them apart
+    # without a second run.
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as smtp:
+            smtp.starttls()
+            smtp.send_message(msg)
+    except Exception as error:
+        raise RuntimeError(
+            f"SMTP {smtp_server}:{smtp_port} -> {error_email}: "
+            f"{type(error).__name__}: {error}"
+        ) from error
